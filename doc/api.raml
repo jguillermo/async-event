@@ -1,0 +1,41 @@
+#%RAML 1.0
+title: Eventos y procesos asíncronos
+version: v1
+baseUri: https://lambda-aws.pe
+
+types:
+    api_response:
+      properties:
+        success: boolean
+        code: number
+        message: string
+        data: object
+      example: !include examples/response_event_body.json
+    event_body:
+      properties:
+        transaction_id: 
+          description: id de la transacción para identificar un grupo de eventos
+          type: string
+        name:
+          description: nombre del evento
+          type: string
+        attributes: 
+          description: descripcion del evento id, title, ...
+          type: object
+        meta:
+          description: metadatos del evento servidor, platform, ...
+          type: object
+          
+/async/send:
+  post:
+    description: ejecutar procesos asincronos y registrarlos en un storage
+    body: 
+      application/json:
+        type: event_body
+        example: !include examples/request_event_body.json
+    responses:
+      201:
+        body:
+          application/json:
+            type: api_response
+              

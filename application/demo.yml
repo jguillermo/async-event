@@ -1,0 +1,52 @@
+    ### sources first app
+
+    # Create our 'firstAppQueue' SQS queue
+    firstAppQueue:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: ${self:custom.serviceName}-first-app-queue
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt
+            - firstAppQueueDLQ
+            - Arn
+          maxReceiveCount: 3
+
+    # Create our 'firstAppQueue' Dead Letter Queue SQS queue
+    firstAppQueueDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.serviceName}-first-app-queue-dlq
+
+    # Create our queue policy for the 'firstAppQueue'
+    snsToFirstAppQueueSqsPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: "allow-sns-messages"
+              Effect: Allow
+              Principal: "*"
+              Resource: !GetAtt
+                - firstAppQueue
+                - Arn
+              Action: "SQS:SendMessage"
+              Condition:
+                ArnEquals:
+                  "aws:SourceArn": !Ref eventSnsTopic
+        Queues:
+          - Ref: firstAppQueue
+
+    # Create the subscription to the 'firstAppQueue'
+    firstAppQueueSubscription:
+      Type: 'AWS::SNS::Subscription'
+      Properties:
+        TopicArn: !Ref eventSnsTopic
+        Endpoint: !GetAtt
+          - firstAppQueue
+          - Arn
+        Protocol: sqs
+        FilterPolicy:
+          event_type:
+            - 'sendSMS'
+        RawMessageDelivery: 'true'

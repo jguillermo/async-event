@@ -1,0 +1,220 @@
+service: ${self:custom.serviceName}
+
+plugins:
+  - serverless-offline
+
+provider:
+  name: aws
+  runtime: nodejs8.10
+  region: us-east-1
+  environment:
+    REGION: ${self:provider.region}
+    EVENT_STORAGE_DB: ${self:custom.serviceName}-db
+    SERVICE_SNS_URL:
+      Ref: eventSnsTopic
+
+  iamRoleStatements:
+    - Effect: "Allow"
+      Action:
+        - "sns:Publish"
+      Resource:
+        Fn::Join:
+          - ":"
+          - - arn
+            - aws
+            - sns
+            - ${self:provider.region}
+            - Ref: AWS::AccountId
+            - ${self:custom.serviceName}-event-sns-topic
+    - Effect: "Allow"
+      Action:
+        - "dynamodb:GetItem"
+        - "dynamodb:PutItem"
+        - "dynamodb:UpdateItem"
+        - "dynamodb:DeleteItem"
+      Resource:
+        - "arn:aws:dynamodb:${self:provider.region}:*:table/${self:provider.environment.EVENT_STORAGE_DB}"
+custom:
+  serviceName: ${env:PROJECT_NAME}
+  stage: ${opt:stage, self:custom.defaultStage}
+  defaultStage: dev
+  stages:
+    - ${opt:stage}
+    - dev
+    - production
+
+
+functions:
+  document:
+    handler: src/handler/static.document
+    events:
+      - http:
+          path: doc
+          method: get
+
+  send_sns:
+    handler: src/handler/sns.send
+    events:
+      - http:
+          path: async/send
+          method: post
+          cors: true
+
+  process_sqs_event_storage:
+    handler: src/handler/queue.event_storage
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - eventStorageQueue
+              - Arn
+          batchSize: 1
+
+  process_sqs_first_app:
+    handler: src/handler/queue.first_app
+    events:
+      - sqs:
+          arn:
+            Fn::GetAtt:
+              - firstAppQueue
+              - Arn
+          batchSize: 1
+
+  demo_event:
+    handler: src/handler/queue.demo_event
+    events:
+      - http:
+          path: demo
+          method: get
+          cors: true
+
+resources:
+  Resources:
+    eventStorageDb:
+      Type: "AWS::DynamoDB::Table"
+      #DeletionPolicy: Retain
+      Properties:
+        AttributeDefinitions:
+          - AttributeName: "eventId"
+            AttributeType: "S"
+        KeySchema:
+          - AttributeName: "eventId"
+            KeyType: "HASH"
+        ProvisionedThroughput:
+          ReadCapacityUnits: 1
+          WriteCapacityUnits: 1
+        TableName: ${self:provider.environment.EVENT_STORAGE_DB}
+
+    ## PART ONE: Create SNS Topic and SQS Queues
+    # Create our SNS Topic
+    eventSnsTopic:
+      Type: AWS::SNS::Topic
+      Properties:
+        TopicName: ${self:custom.serviceName}-event-sns-topic
+
+    # Create our 'eventStorageQueue' SQS queue
+    eventStorageQueue:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: ${self:custom.serviceName}-event-storage-queue
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt
+            - eventStorageQueueDLQ
+            - Arn
+          maxReceiveCount: 3
+
+    # Create our 'eventStorageQueue' Dead Letter Queue SQS queue
+    eventStorageQueueDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.serviceName}-event-storage-queue-dlq
+
+    ## PART TWO: Create SQS Queue Policies
+
+    # Create our queue policy for the 'eventStorageQueue'
+    snsToEventStorageQueueSqsPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: "allow-sns-messages"
+              Effect: Allow
+              Principal: "*"
+              Resource: !GetAtt
+                - eventStorageQueue
+                - Arn
+              Action: "SQS:SendMessage"
+              Condition:
+                ArnEquals:
+                  "aws:SourceArn": !Ref eventSnsTopic
+        Queues:
+          - Ref: eventStorageQueue
+
+    ## PART THREE: Subscribe our SQS Queues to our SNS Topic
+
+    # Create the subscription to the 'eventStorageQueue'
+    eventStorageQueueSubscription:
+      Type: 'AWS::SNS::Subscription'
+      Properties:
+        TopicArn: !Ref eventSnsTopic
+        Endpoint: !GetAtt
+          - eventStorageQueue
+          - Arn
+        Protocol: sqs
+        RawMessageDelivery: 'true'
+
+    ### sources first app
+
+    # Create our 'firstAppQueue' SQS queue
+    firstAppQueue:
+      Type: "AWS::SQS::Queue"
+      Properties:
+        QueueName: ${self:custom.serviceName}-first-app-queue
+        RedrivePolicy:
+          deadLetterTargetArn: !GetAtt
+            - firstAppQueueDLQ
+            - Arn
+          maxReceiveCount: 3
+
+    # Create our 'firstAppQueue' Dead Letter Queue SQS queue
+    firstAppQueueDLQ:
+      Type: AWS::SQS::Queue
+      Properties:
+        QueueName: ${self:custom.serviceName}-first-app-queue-dlq
+
+    # Create our queue policy for the 'firstAppQueue'
+    snsToFirstAppQueueSqsPolicy:
+      Type: AWS::SQS::QueuePolicy
+      Properties:
+        PolicyDocument:
+          Version: "2012-10-17"
+          Statement:
+            - Sid: "allow-sns-messages"
+              Effect: Allow
+              Principal: "*"
+              Resource: !GetAtt
+                - firstAppQueue
+                - Arn
+              Action: "SQS:SendMessage"
+              Condition:
+                ArnEquals:
+                  "aws:SourceArn": !Ref eventSnsTopic
+        Queues:
+          - Ref: firstAppQueue
+
+    # Create the subscription to the 'firstAppQueue'
+    firstAppQueueSubscription:
+      Type: 'AWS::SNS::Subscription'
+      Properties:
+        TopicArn: !Ref eventSnsTopic
+        Endpoint: !GetAtt
+          - firstAppQueue
+          - Arn
+        Protocol: sqs
+        FilterPolicy:
+          event_type:
+            - 'pepe.question.create.end'
+        RawMessageDelivery: 'true'
+
+package: ${file(sls_pkg_exclude.yml)}

@@ -1,0 +1,14 @@
+version: '2'
+services:
+
+  hostserverless:
+    image: $IMAGE_DEV
+    container_name: $CONTAINER_NAME
+    ports: 
+      - 3000:3000
+    #mem_limit: 300m
+    volumes: 
+      - ./../application:/application
+    command: "serverless -s DEV offline --host hostserverless"
+
+
